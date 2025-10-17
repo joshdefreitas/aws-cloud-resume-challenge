@@ -1,74 +1,70 @@
-name: Deploy website to S3 + CloudFront
+name: Deploy website to S3 + CloudFront (OIDC)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
-  id-token: write   # required for OIDC
+  id-token: write
   contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - run: echo "Repo=$GITHUB_REPOSITORY  Ref=$GITHUB_REF"
-      - name: Validate inputs
+      # Fail fast if the role ARN secret is missing
+      - name: Validate role ARN
         run: |
           test -n "${AWS_DEPLOY_ROLE_ARN}" || { echo "ERROR: AWS_DEPLOY_ROLE_ARN is empty"; exit 1; }
-          echo "Repo=$GITHUB_REPOSITORY  Ref=$GITHUB_REF"
         env:
           AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-
-      - id: oidc
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const tok = await core.getIDToken('sts.amazonaws.com');
-            const payload = JSON.parse(Buffer.from(tok.split('.')[1], 'base64').toString());
-            console.log('OIDC aud:', payload.aud);
-            console.log('OIDC sub:', payload.sub);
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}  # arn:aws:iam::<acct-id>:role/<role>
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}
           aws-region: us-east-2
 
-      # Sync non-HTML assets with long cache (fast), mirror deletions
-      - name: Sync assets to S3 (long cache)
-        uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          args: >
-            --exclude "*.html"
-            --cache-control "public,max-age=31536000,immutable"
-            --follow-symlinks
-            --delete
+      - name: Verify AWS creds
+        run: aws sts get-caller-identity
+
+      # Optional sanity checks for your secrets (won't print values)
+      - name: Validate deploy targets
+        run: |
+          test -n "${AWS_S3_BUCKET}" || { echo "ERROR: AWS_S3_BUCKET secret is empty"; exit 1; }
+          test -n "${CLOUDFRONT_DISTRIBUTION_ID}" || { echo "ERROR: CLOUDFRONT_DISTRIBUTION_ID secret is empty"; exit 1; }
+          case "$AWS_S3_BUCKET" in
+            s3://*|*/*) echo "Bucket must be just the name (no s3://, no /)"; exit 1;;
+          esac
         env:
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_REGION: us-east-2
-          SOURCE_DIR: website
+          CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
 
-      # Sync HTML with no-cache so updates show immediately
-      - name: Sync HTML to S3 (no-cache)
-        uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          args: >
-            --exclude "*"
-            --include "*.html"
-            --cache-control "no-cache"
+      # Upload long-lived assets (exclude HTML) with strong caching
+      - name: Upload assets (long cache)
+        run: |
+          aws s3 sync website "s3://${AWS_S3_BUCKET}" \
+            --exclude "*.html" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --follow-symlinks --delete
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+
+      # Upload HTML with no-cache so page updates show immediately
+      - name: Upload HTML (no-cache)
+        run: |
+          aws s3 sync website "s3://${AWS_S3_BUCKET}" \
+            --exclude "*" --include "*.html" \
+            --cache-control "no-cache" \
             --follow-symlinks
         env:
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_REGION: us-east-2
-          SOURCE_DIR: website
 
-      # Invalidate CloudFront so edge locations fetch the fresh content
+      # Invalidate CloudFront so edges fetch fresh content
       - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
