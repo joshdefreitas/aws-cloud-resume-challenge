@@ -1,50 +1,58 @@
-name: Deploy to S3 behind CloudFront
+name: Deploy website to S3 + CloudFront
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write   # required for OIDC
   contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/OIDC-GitHub-CloudResume-S3
-          aws-region: us-east-2   # <- your bucket’s region
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}  # arn:aws:iam::<acct-id>:role/<role>
+          aws-region: us-east-2
 
-      - name: Sanity check
-        run: aws sts get-caller-identity
-
-      # Upload long-lived assets (cache a year), exclude HTML
-      - name: Upload assets
-        run: |
-          aws s3 sync website s3://$AWS_S3_BUCKET \
-            --exclude "*.html" \
-            --cache-control "public,max-age=31536000,immutable" \
-            --follow-symlinks --delete
+      # Sync non-HTML assets with long cache (fast), mirror deletions
+      - name: Sync assets to S3 (long cache)
+        uses: jakejarvis/s3-sync-action@v0.11.0
+        with:
+          args: >
+            --exclude "*.html"
+            --cache-control "public,max-age=31536000,immutable"
+            --follow-symlinks
+            --delete
         env:
           AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
+          AWS_REGION: us-east-2
+          SOURCE_DIR: website
 
-      # Upload HTML (no-cache) so updates show instantly
-      - name: Upload HTML
-        run: |
-          aws s3 sync website s3://$AWS_S3_BUCKET \
-            --exclude "*" --include "*.html" \
-            --cache-control "no-cache" \
+      # Sync HTML with no-cache so updates show immediately
+      - name: Sync HTML to S3 (no-cache)
+        uses: jakejarvis/s3-sync-action@v0.11.0
+        with:
+          args: >
+            --exclude "*"
+            --include "*.html"
+            --cache-control "no-cache"
             --follow-symlinks
         env:
           AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
+          AWS_REGION: us-east-2
+          SOURCE_DIR: website
 
-      - name: Invalidate CloudFront
+      # Invalidate CloudFront so edge locations fetch the fresh content
+      - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
