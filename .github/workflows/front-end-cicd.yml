@@ -39,7 +39,7 @@ jobs:
 
       # Sync HTML with no-cache so updates show immediately
       - name: Sync HTML to S3 (no-cache)
-        uses: jakejarvis/s3-sync-action@v0.11.0
+        uses: jakejarvis/s3-sync-action@v0.5.1
         with:
           args: >
             --exclude "*"
