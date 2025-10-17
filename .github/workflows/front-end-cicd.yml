@@ -25,7 +25,7 @@ jobs:
 
       # Sync non-HTML assets with long cache (fast), mirror deletions
       - name: Sync assets to S3 (long cache)
-        uses: jakejarvis/s3-sync-action@v0.11.0
+        uses: jakejarvis/s3-sync-action@v0.5.1
         with:
           args: >
             --exclude "*.html"
