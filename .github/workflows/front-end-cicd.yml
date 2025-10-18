@@ -32,7 +32,7 @@ jobs:
       - name: Verify AWS creds
         run: aws sts get-caller-identity
 
-      # Optional sanity checks for your secrets (won't print values)
+      # Sanity checks for your secrets (does not print values)
       - name: Validate deploy targets
         run: |
           test -n "${AWS_S3_BUCKET}" || { echo "ERROR: AWS_S3_BUCKET secret is empty"; exit 1; }
